@@ -36,7 +36,7 @@ Unlike general-purpose runtimes that rely on interpretive overhead, Steelix perf
 ### 1. Environment Setup
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/aot-compiler.git
+git clone https://github.com/venugopalreddy2004/aot-compiler.git
 cd aot-compiler
 
 # Install Python dependencies
