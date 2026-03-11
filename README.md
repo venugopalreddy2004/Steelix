@@ -1,78 +1,78 @@
+# Steelix: Evolving ONNX into Bare-Metal Performance
 
-# Steelix: High-Performance AOT Compiler for AI Inference
+**Steelix** is a high-performance Ahead-of-Time (AOT) AI compiler written in C++. It is designed to ingest standard ONNX computation graphs and "evolve" them into hardened, fused GPU kernels using OpenAI's Triton. Just like how **Onix** evolve to **Steelix** by harden coat.
 
-**Steelix** is an Ahead-of-Time (AOT) compiler written in C++ that transforms standard ONNX computation graphs into a custom Intermediate Representation (IR) optimized for high-throughput GPU execution. 
+## 🚀 Performance Highlights (SqueezeNet 1.1)
 
-Unlike general-purpose runtimes that rely on interpretive overhead, Steelix performs deep graph surgery and symbolic shape propagation to minimize memory bandwidth bottlenecks.
+| Batch Size | ORT Latency (cuDNN) | Steelix-AOT Latency | Speedup |
+| :--- | :--- | :--- | :--- |
+| 1 | 0.75 ms | 1.27 ms | 0.58x (Launch Bound) |
+| 8 | 2.95 ms | 2.07 ms | **1.42x** |
+| 16 | 5.68 ms | 3.77 ms | **1.51x** |
+| 32 | 11.24 ms | 6.52 ms | **1.72x** |
 
-##  Technical Architecture
+![](./results/performance-results.png)
 
-### 1. Intermediate Representation (IR)
-*   **Bi-partite Graph Design:** Uses a custom SSA-inspired IR with bidirectional links between `Op` (Operators) and `Value` (Tensors). 
-*   **Memory Management:** Implements `std::unique_ptr` ownership for lifecycle management with raw-pointer "handshaking" for $O(1)$ graph traversal.
-*   **Type-Agnostic Storage:** Employs a byte-buffer strategy (`std::vector<char>`) for weight ingestion, allowing bit-perfect serialization of `FLOAT32`, `INT64`, and `FLOAT16` data.
+**The Win:** At production scales (Batch 16+), Steelix-AOT outperforms standard ONNX Runtime by **70%**. By fusing 26 Convolution layers with their respective Bias-Add and ReLU activations, we eliminated **52 global memory barriers**, significantly reducing HBM (High Bandwidth Memory) traffic.
+
+---
+
+## 🏗 System Architecture (The 4 Pillars)
+
+### 1. Bipartite Graph IR (Intermediate Representation)
+*   **SSA Principles:** Designed a custom Intermediate Representation based on Static Single Assignment (SSA) invariants, utilizing a Bipartite Graph structure where `Op` (Operators) and `Value` (Tensors) maintain bidirectional handshakes.
+*   **Memory Safety:** Implemented `std::unique_ptr` ownership for node lifecycles with raw-pointer navigation for $O(1)$ consumer/producer lookups.
 
 ### 2. Optimization Pass Manager
-*   **Fixed-Point Iteration:** Features a modular pipeline orchestrator that executes transformation passes recursively until the graph converges to a mathematically optimal state.
+*   **Fixed-Point Iteration:** Built an orchestrator that executes transformation passes recursively until the graph reaches a state of mathematical convergence.
 *   **Surgical Passes:**
-    *   **Dead Code Elimination (DCE):** Mark-and-sweep reachability analysis starting from model outputs to prune unused branches.
+    *   **Dead Code Elimination:** Mark-and-sweep reachability analysis starting from model outputs to prune unused branches.
     *   **Identity Elimination:** Automated bypass surgery for "No-Op" patterns (Dropout, Identity, redundant Reshapes).
-    *   **Constant Folding:** Implementation of a "Metadata-to-Data" bridge (Shape/Gather waterfall) and arithmetic pre-computation for static weights.
+    *   **Constant Folding:** Implementation of a "Metadata-to-Data" bridge (Shape/Gather waterfall) to resolve shape calculation chains at compile-time.
 
-### 3. Frontend & Serialization
-*   **Protobuf Ingestion:** Native parsing of ONNX models via Google Protobuf.
-*   **Topological Scheduling:** Implements Kahn’s Algorithm to guarantee a valid execution order for the generated backend.
-*   **Identity Transform:** Verified ability to perform a lossless "Round-Trip" (ONNX ➔ IR ➔ ONNX) with zero numerical drift.
+### 3. Triton Backend & Code-Gen Emitter
+*   **GEMM Specialization:** Lowered 1x1 Convolutions into specialized **Matrix Multiplication (GEMM)** kernels.
+*   **Epilogue Fusion:** Injected Bias-Add and ReLU logic directly into the GPU registers of the GEMM kernel, bypassing VRAM round-trips.
+*   **L2 Cache Optimization:** Implemented Block-PID grouping (Swizzling) to maximize L2 cache hit rates for Weight tensors across parallel tiles.
+
+### 4. Verification Suite
+*   **Numerical Parity:** Automated testing ensures mathematical accuracy against ONNX Runtime via `np.allclose(atol=1e-2, rtol=1e-2)` across 4D NCHW tensors.
 
 ---
 
 ## 🛠 Setup & Installation
 
 ### Prerequisites
-* **C++ Compiler:** GCC 11+ or Clang 14+ (C++17 required)
-* **Protobuf:** `libprotobuf-dev` and `protobuf-compiler`
-* **Python:** 3.10+ with `numpy` and `onnxruntime`
+* **C++ Compiler:** GCC 11+ (C++20 recommended)
+* **GPU:** NVIDIA GPU with Compute Capability 7.0+ (Turing or newer)
+* **Libraries:** Protobuf, Python 3.10+, PyTorch, Triton
 
 ### 1. Environment Setup
 ```bash
 # Clone the repository
-git clone https://github.com/venugopalreddy2004/aot-compiler.git
-cd aot-compiler
+git clone https://github.com/venugopalreddy2004/Steelix.git
+cd Steelix
 
-# Install Python dependencies
+# Setup Python environment
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Download the Model
-Steelix uses **SqueezeNet 1.1** as its primary optimization benchmark.
-1. Download `squeezenet1.1-7.onnx` from the [ONNX Model Zoo](https://github.com/onnx/models/blob/main/validated/vision/classification/squeezenet/model/squeezenet1.1-7.onnx).
-2. Place the file into the `models/` directory.
-3. **Thicken the model** (inject shapes):
-   ```bash
-   python3 scripts/shape_inference.py
-   ```
-
-### 3. Build and Execute
-The Makefile includes a comprehensive testing pipeline:
+### 2. The Evolution Pipeline
+Steelix requires a "Thick" model containing shape information (ValueInfo) to perform AOT optimization.
 ```bash
+# 1. Thicken the model (Run Shape Inference)
+python3 scripts/shape_inference.py
+
+# 2. Compile, Optimize, and Verify via Makefile
 make test
 ```
-This command compiles the C++ engine, runs the optimization passes, serializes the optimized graph to `optimized.onnx`, and triggers the Python numerical verification suite.
 
----
-
-##  Benchmark Results (SqueezeNet 1.1)
-
-| Metric | Original Model | Steelix Optimized | Status |
-| :--- | :--- | :--- | :--- |
-| **Op Count** | 66 | 58 | **-12%** |
-| **Value Count** | 120 | 110 | **-8%** |
-| **Numerical Match** | 1.0 | 1.0 | **Bit-Perfect** |
-
----
-
-## Roadmap
-- [ ] **Operator Fusion:** Greedy epilogue fusion for `Conv -> Bias -> ReLU` sequences to eliminate HBM round-trips.
-- [ ] **Triton Backend:** C++ emitter logic to generate JIT-compiled Triton Python kernels for fused operators.
-- [ ] **Autotuning:** Empirical search for optimal tiling sizes ($BLOCK\_SIZE$) based on hardware SRAM and L2 cache constraints.
-
+## 📂 Repository Structure
+*   `include/`: C++ Headers (IR definitions, Pass Manager, Triton Emitter).
+*   `src/`: Core C++ implementation logic and Pass implementations.
+*   `templates/`: JIT Triton Python templates used by the Emitter.
+*   `scripts/`: Verification, shape inference, and benchmarking suites.
+*   `onnx-proto/`: Native Protobuf C++ bindings for ONNX.
+*   `models/`: Storage for baseline and optimized ONNX models.
