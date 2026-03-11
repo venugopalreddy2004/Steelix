@@ -5,6 +5,7 @@
 #include "onnx-ml.pb.h"
 #include "ir.h"
 #include "optimizer.h"
+#include "emitter.h"
 
 // IR is "Type-Agnostic" in its storage, but "Type-Aware" in its execution
 
@@ -129,15 +130,28 @@ int main() {
         }
     }
 
+    // for(const auto& node : symTable.ops){
+    //     std::cout<<node->type<<"\n";
+    // }
+
     opt::PassManager pm;
     pm.addPass(std::make_unique<opt::identityCodeElim>());
     pm.addPass(std::make_unique<opt::deadCodeElim>());
     pm.addPass(std::make_unique<opt::constantFolding>());
-    pm.converge(symTable, undying);
+    pm.addPass(std::make_unique<opt::operatorFusion>());
 
-    onnx::ModelProto my_model = symTable.serialize();
-    std::ofstream out("models/builded.onnx", std::ios::binary);
-    my_model.SerializeToOstream(&out);
-    out.close();
+    std::cout<<"Number of ops before optimizing "<<symTable.ops.size()<<'\n';
+
+    pm.converge(symTable, undying);
+    backend::TritonEmitter emitter;
+    emitter.emit(symTable, "./build"); 
+    std::cout << "Triton Backend Generated: build/generated_kernels.py and build/runner.py" << std::endl;
+
+    std::cout<<"Number of ops before optimizing "<<symTable.ops.size()<<'\n';
+
+    // onnx::ModelProto my_model = symTable.serialize();
+    // std::ofstream out("models/builded.onnx", std::ios::binary);
+    // my_model.SerializeToOstream(&out);
+    // out.close();
     return 0;
 }
