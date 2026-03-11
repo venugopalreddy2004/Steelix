@@ -20,6 +20,19 @@ namespace ir {
         std::vector<char> raw_data; 
         Op* producer = nullptr;
         std::vector<Op*> consumers;
+        std::vector<int64_t> get_strides() {
+            int64_t rank = this->shape.size();
+            if (rank == 0) return {}; 
+
+            std::vector<int64_t> strides(rank);
+            int64_t current_stride = 1;
+
+            for (int i = rank - 1; i >= 0; i--) {
+                strides[i] = current_stride;
+                current_stride *= this->shape[i];
+            }
+            return strides;
+        }
     };
 
     struct Op{
