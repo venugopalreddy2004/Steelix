@@ -438,6 +438,82 @@ namespace opt {
         }
     };
 
+class operatorFusion : public Pass {
+public:
+    std::string name() const override { return "Operator Fusion (Conv+Bias+ReLU)"; }
+
+    bool run(ir::Graph& graph, const std::set<ir::Value*>& undying) override {
+        for (auto& op_ptr : graph.ops) {
+            ir::Op* op = op_ptr.get();
+            if (op->type != "Conv") continue;
+
+            ir::Op* conv_node = op;
+            ir::Value* conv_out = conv_node->outputs[0];
+            if (conv_out->consumers.size() != 1 || undying.count(conv_out)) continue;
+
+            ir::Op* next_node = conv_out->consumers[0];
+            ir::Op* bias_node = nullptr;
+            ir::Op* relu_node = nullptr;
+
+            if (next_node->type == "Add") {
+                ir::Value* b_cand = (next_node->inputs[0] == conv_out) ? next_node->inputs[1] : next_node->inputs[0];
+                if (b_cand->is_init) {
+                    bias_node = next_node;
+                    ir::Value* add_out = bias_node->outputs[0];
+                    if (add_out->consumers.size() == 1 && !undying.count(add_out)) {
+                        if (add_out->consumers[0]->type == "Relu") relu_node = add_out->consumers[0];
+                    }
+                }
+            } else if (next_node->type == "Relu") {
+                relu_node = next_node;
+            }
+
+            if (!bias_node && !relu_node) continue;
+
+            ir::Op* tail_node = relu_node ? relu_node : bias_node;
+            ir::Value* tail_out = tail_node->outputs[0];
+            std::string original_final_name = tail_out->name;
+
+            ir::Op* fusedOp = graph.create_op(conv_node->name + "_fused", "FusedConv");
+            ir::Value* fusedOut = graph.create_value(original_final_name + "_fused_wire");
+            fusedOut->producer = fusedOp;
+            fusedOut->shape = tail_out->shape;
+            fusedOut->type = tail_out->type;
+            fusedOp->outputs.push_back(fusedOut); 
+
+            // Input Migration with Triple Handshake
+            for (auto* in : conv_node->inputs) {
+                fusedOp->inputs.push_back(in);
+                in->consumers.push_back(fusedOp);
+            }
+            if (bias_node) {
+                ir::Value* b = (bias_node->inputs[0] == conv_out) ? bias_node->inputs[1] : bias_node->inputs[0];
+                fusedOp->inputs.push_back(b);
+                b->consumers.push_back(fusedOp);
+            }
+
+            fusedOp->int_attr = conv_node->int_attr;
+            fusedOp->float_attr = conv_node->float_attr;
+            if (relu_node) fusedOp->int_attr["activation_relu"] = {1};
+
+            std::vector<ir::Op*> consumers = tail_out->consumers;
+            for (auto* c : consumers) {
+                std::replace(c->inputs.begin(), c->inputs.end(), tail_out, fusedOut);
+                fusedOut->consumers.push_back(c);
+            }
+
+            fusedOut->name = original_final_name;
+            graph.value_map[original_final_name] = fusedOut;
+            tail_out->consumers.clear();
+            conv_out->consumers.clear();
+            if (bias_node) bias_node->outputs[0]->consumers.clear();
+
+            return true; 
+        }
+        return false;
+    }
+};
+
     class PassManager{
         public:
             std::vector<std::unique_ptr<Pass>> pipeline;
