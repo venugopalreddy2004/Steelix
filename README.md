@@ -72,7 +72,6 @@ make test
 ## 📂 Repository Structure
 *   `include/`: C++ Headers (IR definitions, Pass Manager, Triton Emitter).
 *   `src/`: Core C++ implementation logic and Pass implementations.
-*   `templates/`: JIT Triton Python templates used by the Emitter.
 *   `scripts/`: Verification, shape inference, and benchmarking suites.
 *   `onnx-proto/`: Native Protobuf C++ bindings for ONNX.
 *   `models/`: Storage for baseline and optimized ONNX models.
