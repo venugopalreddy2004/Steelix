@@ -6,11 +6,13 @@
 #include <algorithm>
 #include <iostream>
 
-namespace backend {
+namespace backend
+{
 
-class TritonEmitter {
-private:
-    const std::string KERNEL_TEMPLATE = R"(
+    class TritonEmitter
+    {
+    private:
+        const std::string KERNEL_TEMPLATE = R"(
 @triton.autotune(configs=autotune_configs, key=['M','N','K'])
 @triton.jit
 def _fused_kernel(
@@ -31,8 +33,13 @@ def _fused_kernel(
 
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
-    pid_m = pid % num_pid_m
-    pid_n = (pid // num_pid_m) % num_pid_n
+    num_pid_in_grp = GROUP_SIZE*num_pid_n
+    grp_id = pid//num_pid_in_grp
+    pid_start_along_m = grp_id*GROUP_SIZE
+    adj_grp_size = min(GROUP_SIZE, num_pid_m-pid_start_along_m)
+
+    pid_m = pid_start_along_m + ((pid%num_pid_in_grp) % adj_grp_size)
+    pid_n = ((pid%num_pid_in_grp) // adj_grp_size)
 
     rm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     rn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
@@ -61,26 +68,38 @@ def _fused_kernel(
     tl.store(c_ptr + c_offsets, acc.to(tl.float16), mask=(rm[:, None] < M) & (rn[None, :] < N))
 )";
 
-    std::string sanitize(std::string name) {
-        std::replace(name.begin(), name.end(), '/', '_');
-        std::replace(name.begin(), name.end(), '.', '_');
-        std::replace(name.begin(), name.end(), ':', '_');
-        std::replace(name.begin(), name.end(), '-', '_');
-        return "v_" + name;
-    }
+        std::string sanitize(std::string name)
+        {
+            std::replace(name.begin(), name.end(), '/', '_');
+            std::replace(name.begin(), name.end(), '.', '_');
+            std::replace(name.begin(), name.end(), ':', '_');
+            std::replace(name.begin(), name.end(), '-', '_');
+            return "v_" + name;
+        }
 
-    std::string get_val(ir::Value* v) {
-        if (v->is_init) return "weights['" + v->name + "']";
-        return "self.vars['" + v->name + "']";
-    }
+        std::string get_val(ir::Value *v)
+        {
+            if (v->is_init)
+                return "weights['" + v->name + "']";
+            return "self.vars['" + v->name + "']";
+        }
 
-public:
-    void emit(ir::Graph& graph, const std::string& output_dir) {
-        std::ofstream k_file(output_dir + "/generated_kernels.py");
-        std::ofstream r_file(output_dir + "/runner.py");
+    public:
+        void emit(ir::Graph &graph, const std::string &output_dir)
+        {
+            std::ofstream k_file(output_dir + "/generated_kernels.py");
+            std::ofstream r_file(output_dir + "/runner.py");
 
-        k_file << "import torch\nimport triton\nimport triton.language as tl\n\n";
-        k_file << "autotune_configs = [triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE': 8}, num_stages=4, num_warps=4)]\n";
+            k_file << "import torch\nimport triton\nimport triton.language as tl\n\n";
+        k_file << R"(autotune_configs = [
+    triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE': 8}, num_stages=3, num_warps=8),
+    triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE': 8}, num_stages=4, num_warps=4),
+    triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE': 8}, num_stages=4, num_warps=4),
+    triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE': 8}, num_stages=4, num_warps=4),
+    triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE': 8}, num_stages=4, num_warps=4),
+    triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE': 8}, num_stages=4, num_warps=4),
+    triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE': 8}, num_stages=5, num_warps=2),
+    triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE': 8}, num_stages=5, num_warps=2)])";
         k_file << KERNEL_TEMPLATE << "\n";
 
         r_file << "import torch\nimport torch.nn.functional as F\nimport generated_kernels\nimport triton\n\n";
@@ -89,29 +108,33 @@ public:
         r_file << "        self.weights = weights\n";
         r_file << "        self.batch_size = batch_size\n";
         r_file << "        self.vars = {}\n\n";
-        
+
         r_file << "    def forward(self, input_tensor):\n";
         r_file << "        weights = self.weights\n";
         r_file << "        batch_size = self.batch_size\n";
-        
-        if (!graph.modelIp.empty()) {
+
+        if (!graph.modelIp.empty())
+        {
             r_file << "        self.vars['" << graph.modelIp[0]->name << "'] = input_tensor.to(torch.float16).cuda()\n\n";
         }
 
-        for (auto& op_ptr : graph.ops) {
-            ir::Op* op = op_ptr.get();
+        for (auto &op_ptr : graph.ops)
+        {
+            ir::Op *op = op_ptr.get();
             std::string out = op->outputs[0]->name;
             std::string in0 = get_val(op->inputs[0]);
 
             // --- 1. POOLING (MANDATORY FIX) ---
-            if (op->type == "GlobalAveragePool" || op->type == "AveragePool") {
+            if (op->type == "GlobalAveragePool" || op->type == "AveragePool")
+            {
                 r_file << "        self.vars['" << out << "'] = F.adaptive_avg_pool2d(" << in0 << ", (1, 1))\n\n";
                 continue;
             }
 
             // --- 2. TRITON GEMM (1x1) ---
             bool is_1x1 = (op->int_attr.count("kernel_shape") && op->int_attr.at("kernel_shape")[0] == 1);
-            if (op->type == "FusedConv" && is_1x1) {
+            if (op->type == "FusedConv" && is_1x1)
+            {
                 int64_t Ci = op->inputs[0]->shape[1], H = op->inputs[0]->shape[2], W = op->inputs[0]->shape[3];
                 int64_t Co = op->inputs[1]->shape[0], M = H * W, K = Ci, N = Co;
                 bool has_relu = op->int_attr.count("activation_relu");
@@ -128,36 +151,47 @@ public:
                 r_file << "        self.vars['" << out << "'] = C.transpose(1, 2).reshape(batch_size, " << Co << ", " << H << ", " << W << ")\n\n";
             }
             // --- 3. CONV FALLBACK ---
-            else if (op->type == "Conv" || op->type == "FusedConv") {
+            else if (op->type == "Conv" || op->type == "FusedConv")
+            {
                 r_file << "        res = F.conv2d(" << in0 << ".to(torch.float32), weights['" << op->inputs[1]->name << "'].to(torch.float32), "
                        << (op->inputs.size() > 2 ? "weights['" + op->inputs[2]->name + "'].to(torch.float32)" : "None") << ", "
                        << "stride=" << (op->int_attr.count("strides") ? std::to_string(op->int_attr.at("strides")[0]) : "1") << ", "
                        << "padding=" << (op->int_attr.count("pads") ? std::to_string(op->int_attr.at("pads")[0]) : "0") << ").to(torch.float16)\n";
-                if (op->int_attr.count("activation_relu") || op->type == "Relu") r_file << "        res = F.relu(res)\n";
+                if (op->int_attr.count("activation_relu") || op->type == "Relu")
+                    r_file << "        res = F.relu(res)\n";
                 r_file << "        self.vars['" << out << "'] = res\n\n";
             }
             // --- 4. ACTIVATION & SOFTMAX ---
-            else if (op->type == "Relu") {
+            else if (op->type == "Relu")
+            {
                 r_file << "        self.vars['" << out << "'] = F.relu(" << in0 << ")\n\n";
             }
-            else if (op->type == "Softmax") {
+            else if (op->type == "Softmax")
+            {
                 r_file << "        self.vars['" << out << "'] = F.softmax(" << in0 << ".reshape(batch_size, -1), dim=1)\n\n";
             }
             // --- 5. OTHERS (Concat, MaxPool) ---
-            else if (op->type == "MaxPool") {
+            else if (op->type == "MaxPool")
+            {
                 r_file << "        self.vars['" << out << "'] = F.max_pool2d(" << in0 << ", kernel_size=" << op->int_attr.at("kernel_shape")[0] << ", stride=" << op->int_attr.at("strides")[0] << ")\n\n";
             }
-            else if (op->type == "Concat") {
+            else if (op->type == "Concat")
+            {
                 r_file << "        self.vars['" << out << "'] = torch.cat([";
-                for(size_t i=0; i<op->inputs.size(); i++) { r_file << get_val(op->inputs[i]) << (i == op->inputs.size()-1 ? "" : ", "); }
+                for (size_t i = 0; i < op->inputs.size(); i++)
+                {
+                    r_file << get_val(op->inputs[i]) << (i == op->inputs.size() - 1 ? "" : ", ");
+                }
                 r_file << "], dim=1)\n\n";
             }
-            else {
+            else
+            {
                 r_file << "        self.vars['" << out << "'] = " << in0 << ".reshape(batch_size, -1)\n\n";
             }
         }
-        if (!graph.modelOp.empty()) r_file << "        return self.vars['" << graph.modelOp[0]->name << "']\n";
-    }
-};
+        if (!graph.modelOp.empty())
+            r_file << "        return self.vars['" << graph.modelOp[0]->name << "']\n";
+        }
+    };
 
 }
