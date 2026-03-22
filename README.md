@@ -6,14 +6,14 @@
 
 | Batch Size | ORT Latency (cuDNN) | Steelix-AOT Latency | Speedup |
 | :--- | :--- | :--- | :--- |
-| 1 | 0.75 ms | 1.27 ms | 0.58x (Launch Bound) |
-| 8 | 2.95 ms | 2.07 ms | **1.42x** |
-| 16 | 5.68 ms | 3.77 ms | **1.51x** |
-| 32 | 11.24 ms | 6.52 ms | **1.72x** |
+| 1 | 0.9725 ms | 1.7483 ms | 0.56x (Launch Bound) |
+| 8 | 3.4051 ms | 2.1671 ms | **1.57x** |
+| 16 | 8.9894 ms | 3.7725 ms | **2.38x** |
+| 32 | 16.5463 ms | 6.6131 ms | **2.5x** |
 
 ![](./results/performance-results.png)
 
-**The Win:** At production scales (Batch 16+), Steelix-AOT outperforms standard ONNX Runtime by **70%**. By fusing 26 Convolution layers with their respective Bias-Add and ReLU activations, we eliminated **52 global memory barriers**, significantly reducing HBM (High Bandwidth Memory) traffic.
+**The Win:** At production scales (Batch 16+), Steelix-AOT outperforms standard ONNX Runtime. By fusing 26 Convolution layers with their respective Bias-Add and ReLU activations, we eliminated **52 global memory barriers**, significantly reducing HBM (High Bandwidth Memory) traffic.
 
 ---
 
